@@ -45,9 +45,19 @@ namespace lmms::gui
 {
 
 SimpleTextFloat * FloatModelEditorBase::s_textFloat = nullptr;
+QString FloatModelEditorBase::m_shortcutMessage = "";
+std::vector<InteractiveModelView::ModelShortcut> FloatModelEditorBase::s_shortcutArray =
+{
+	InteractiveModelView::ModelShortcut(Qt::Key_C, Qt::ControlModifier, 0, QString(tr("Copy value")), false),
+	InteractiveModelView::ModelShortcut(Qt::Key_C, Qt::ControlModifier, 1, QString(tr("Link widget")), false),
+	InteractiveModelView::ModelShortcut(Qt::Key_V, Qt::ControlModifier, 0, QString(tr("Paste value")), false),
+	InteractiveModelView::ModelShortcut(Qt::Key_E, Qt::ShiftModifier, 0, QString(tr("Increase value")), false),
+	InteractiveModelView::ModelShortcut(Qt::Key_Q, Qt::ShiftModifier, 0, QString(tr("Decrease value")), false),
+	InteractiveModelView::ModelShortcut(Qt::Key_U, Qt::ControlModifier, 0, QString(tr("Unlink widget")), false)
+};
 
 FloatModelEditorBase::FloatModelEditorBase(DirectionOfManipulation directionOfManipulation, QWidget * parent, const QString & name) :
-	QWidget(parent),
+	InteractiveModelView(parent),
 	FloatModelView(new FloatModel(0, 0, 0, 1, nullptr, name, true), this),
 	m_volumeKnob(false),
 	m_volumeRatio(100.0, 0.0, 1000000.0),
@@ -63,6 +73,11 @@ void FloatModelEditorBase::initUi(const QString & name)
 	if (s_textFloat == nullptr)
 	{
 		s_textFloat = new SimpleTextFloat;
+	}
+
+	if (m_shortcutMessage == "")
+	{
+		m_shortcutMessage = buildShortcutMessage();
 	}
 
 	setWindowTitle(name);
@@ -127,28 +142,24 @@ void FloatModelEditorBase::toggleScale()
 
 void FloatModelEditorBase::dragEnterEvent(QDragEnterEvent * dee)
 {
-	StringPairDrag::processDragEnterEvent(dee, "float_value,"
-							"automatable_model");
+	static std::vector<Clipboard::DataType> acceptedKeys = {
+		Clipboard::DataType::FloatValue,
+		Clipboard::DataType::AutomatableModelLink
+	};
+	StringPairDrag::processDragEnterEvent(dee, &acceptedKeys);
 }
 
 
 void FloatModelEditorBase::dropEvent(QDropEvent * de)
 {
-	QString type = StringPairDrag::decodeKey(de);
-	QString val = StringPairDrag::decodeValue(de);
-	if (type == "float_value")
+	bool canAccept = processPaste(de->mimeData());
+	if (canAccept == true)
 	{
-		model()->setValue(LocaleHelper::toFloat(val));
 		de->accept();
 	}
-	else if (type == "automatable_model")
+	else
 	{
-		auto mod = dynamic_cast<AutomatableModel*>(Engine::projectJournal()->journallingObject(val.toInt()));
-		if (mod != nullptr)
-		{
-			AutomatableModel::linkModels(model(), mod);
-			mod->setValue(model()->value());
-		}
+		de->ignore();
 	}
 }
 
@@ -183,8 +194,8 @@ void FloatModelEditorBase::mousePressEvent(QMouseEvent * me)
 	else if (me->button() == Qt::LeftButton &&
 			(me->modifiers() & Qt::ShiftModifier))
 	{
-		new StringPairDrag("float_value",
-					QString::number(model()->value()),
+		new StringPairDrag(Clipboard::DataType::FloatValue,
+					Clipboard::encodeFloatValue(model()->value()),
 							QPixmap(), this);
 	}
 	else
@@ -232,12 +243,14 @@ void FloatModelEditorBase::mouseReleaseEvent(QMouseEvent* event)
 
 void FloatModelEditorBase::enterEvent(QEvent *event)
 {
+	InteractiveModelView::enterEvent(event);
 	showTextFloat(700, 2000);
 }
 
 
 void FloatModelEditorBase::leaveEvent(QEvent *event)
 {
+	InteractiveModelView::leaveEvent(event);
 	s_textFloat->hide();
 }
 
@@ -275,8 +288,74 @@ void FloatModelEditorBase::paintEvent(QPaintEvent *)
 	p.setPen(foreground);
 	p.setBrush(foreground);
 	p.drawRect(QRect(r.topLeft(), QPoint(r.width() * percentage, r.height())));
+	drawAutoHighlight(&p);
 }
 
+const std::vector<InteractiveModelView::ModelShortcut>& FloatModelEditorBase::getShortcuts()
+{
+	return s_shortcutArray;
+}
+
+void FloatModelEditorBase::processShortcutPressed(size_t shortcutLocation, QKeyEvent* event)
+{
+	switch (shortcutLocation)
+	{
+		case 0:
+			Clipboard::copyStringPair(Clipboard::DataType::FloatValue, Clipboard::encodeFloatValue(model()->value() * getConversionFactor()));
+			InteractiveModelView::startHighlighting(Clipboard::DataType::FloatValue);
+			break;
+		case 1:
+			Clipboard::copyStringPair(Clipboard::DataType::AutomatableModelLink, Clipboard::encodeAutomatableModelLink(*model()));
+			InteractiveModelView::startHighlighting(Clipboard::DataType::AutomatableModelLink);
+			break;
+		case 2:
+			processPaste(Clipboard::getMimeData());
+			break;
+		case 3:
+			model()->setValue(model()->value() + model()->range() / 20.0f);
+			break;
+		case 4:
+			model()->setValue(model()->value() - model()->range() / 20.0f);
+			break;
+		case 5:
+			model()->unlinkAllModels();
+			break;
+		default:
+			break;
+	}
+}
+
+QString FloatModelEditorBase::getShortcutMessage()
+{
+	return m_shortcutMessage;
+}
+
+bool FloatModelEditorBase::canAcceptClipboardData(Clipboard::DataType dataType)
+{
+	return dataType == Clipboard::DataType::FloatValue
+		|| dataType == Clipboard::DataType::AutomatableModelLink;
+}
+
+bool FloatModelEditorBase::processPasteImplementation(Clipboard::DataType type, QString& value)
+{
+	bool shouldAccept = false;
+	if (type == Clipboard::DataType::FloatValue)
+	{
+		model()->setValue(LocaleHelper::toFloat(value));
+		shouldAccept = true;
+	}
+	else if (type == Clipboard::DataType::AutomatableModelLink)
+	{
+		auto mod = dynamic_cast<AutomatableModel*>(Engine::projectJournal()->journallingObject(value.toInt()));
+		if (mod != nullptr)
+		{
+			AutomatableModel::linkModels(model(), mod);
+			mod->setValue(model()->value());
+			shouldAccept = true;
+		}
+	}
+	return shouldAccept;
+}
 
 void FloatModelEditorBase::wheelEvent(QWheelEvent * we)
 {
@@ -418,11 +497,24 @@ void FloatModelEditorBase::enterValue()
 
 void FloatModelEditorBase::friendlyUpdate()
 {
-	if (model() && (model()->controllerConnection() == nullptr ||
-		model()->controllerConnection()->getController()->frequentUpdates() == false ||
-				Controller::runningFrames() % (256*4) == 0))
+	if (model())
 	{
-		update();
+		bool shouldUpdate = false;
+		if (model()->controllerConnection() == nullptr)
+		{
+			shouldUpdate = true;
+		}
+		else
+		{
+			if (model()->controllerConnection()->getController()->frequentUpdates() == false)
+			{
+				if (Controller::runningFrames() % (256*4) == 0) { shouldUpdate = true; }
+			}
+		}
+		if (shouldUpdate)
+		{
+			update();
+		}
 	}
 }
 
