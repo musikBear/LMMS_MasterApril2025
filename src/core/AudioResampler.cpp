@@ -1,7 +1,7 @@
 /*
- * AudioResampler.cpp - wrapper for libsamplerate
+ * AudioResampler.cpp
  *
- * Copyright (c) 2023 saker <sakertooth@gmail.com>
+ * Copyright (c) 2025 Sotonye Atemie <sakertooth@gmail.com>
  *
  * This file is part of LMMS - https://lmms.io
  *
@@ -27,13 +27,14 @@
 #include <samplerate.h>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 namespace lmms {
 
-AudioResampler::AudioResampler(int interpolationMode, int channels)
-	: m_interpolationMode(interpolationMode)
+AudioResampler::AudioResampler(int mode, int channels)
+	: m_state(src_new(mode, channels, &m_error))
 	, m_channels(channels)
-	, m_state(src_new(interpolationMode, channels, &m_error))
+	, m_mode(mode)
 {
 	if (!m_state)
 	{
@@ -48,22 +49,91 @@ AudioResampler::~AudioResampler()
 	src_delete(m_state);
 }
 
-auto AudioResampler::resample(const float* in, long inputFrames, float* out, long outputFrames, double ratio)
-	-> ProcessResult
+AudioResampler::AudioResampler(AudioResampler&& other) noexcept
+	: m_state(std::exchange(other.m_state, nullptr))
 {
-	auto data = SRC_DATA{};
-	data.data_in = in;
-	data.input_frames = inputFrames;
-	data.data_out = out;
-	data.output_frames = outputFrames;
-	data.src_ratio = ratio;
-	data.end_of_input = 0;
-	return {src_process(m_state, &data), data.input_frames_used, data.output_frames_gen};
 }
 
-void AudioResampler::setRatio(double ratio)
+AudioResampler& AudioResampler::operator=(AudioResampler&& other) noexcept
 {
-	src_set_ratio(m_state, ratio);
+	m_state = std::exchange(other.m_state, nullptr);
+	return *this;
+}
+
+auto AudioResampler::resample(float* dst, long frames, double ratio, WriteCallback callback) -> int
+{
+	m_data.data_out = dst;
+	m_data.output_frames = frames;
+
+	m_data.src_ratio = ratio;
+	m_data.end_of_input = 0;
+
+	const auto maxInputFrames = static_cast<long>(m_buffer.size()) / m_channels;
+	auto latestCallbackResult = WriteCallbackResult{};
+
+	while (m_data.output_frames > 0)
+	{
+		if (m_data.input_frames == 0)
+		{
+			latestCallbackResult = callback(m_buffer.data(), maxInputFrames, m_channels);
+			m_data.data_in = m_buffer.data();
+			m_data.input_frames = latestCallbackResult.frames;
+		}
+
+		m_error = src_process(m_state, &m_data);
+		if (m_error || (latestCallbackResult.done && m_data.output_frames_gen == 0)) { break; }
+
+		m_data.data_in += m_data.input_frames_used * m_channels;
+		m_data.data_out += m_data.output_frames_gen * m_channels;
+
+		m_data.input_frames -= m_data.input_frames_used;
+		m_data.output_frames -= m_data.output_frames_gen;
+	}
+
+	// Silence any unfilled output
+	std::fill(dst + (frames - m_data.output_frames) * m_channels, dst + frames * m_channels, 0.f);
+	return 0;
+}
+
+auto AudioResampler::resample(float* dst, long dstFrames, const float* src, long srcFrames, double ratio) -> int
+{
+	m_data.data_out = dst;
+	m_data.output_frames = dstFrames;
+
+	m_data.src_ratio = ratio;
+	m_data.end_of_input = 0;
+
+	while (m_data.output_frames > 0)
+	{
+		if (m_data.input_frames == 0)
+		{
+			// Dont try to read from src again, thats all the extra input we have
+			if (m_data.data_in == src) { break; }
+
+			m_data.data_in = src;
+			m_data.input_frames = srcFrames;
+		}
+
+		m_error = src_process(m_state, &m_data);
+		if (m_error) { break; }
+
+		m_data.data_in += m_data.input_frames_used * m_channels;
+		m_data.data_out += m_data.output_frames_gen * m_channels;
+
+		m_data.input_frames -= m_data.input_frames_used;
+		m_data.output_frames -= m_data.output_frames_gen;
+	}
+
+	// Enforce that the entire source buffer must be resampled into the destination buffer
+	// This avoids having to worry about dropped source audio after this function completes.
+	if (m_data.input_frames > 0)
+	{
+		throw std::logic_error{"Cannot resample entire source buffer into destination buffer"};
+	}
+
+	// Silence any unfilled output
+	std::fill(dst + (dstFrames - m_data.output_frames) * m_channels, dst + dstFrames * m_channels, 0.f);
+	return 0;
 }
 
 } // namespace lmms
