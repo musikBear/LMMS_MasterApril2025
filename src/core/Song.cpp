@@ -52,6 +52,7 @@
 #include "PianoRoll.h"
 #include "ProjectJournal.h"
 #include "ProjectNotes.h"
+#include "ProjectProperties.h"
 #include "Scale.h"
 #include "SongEditor.h"
 #include "TimeLineWidget.h"
@@ -919,6 +920,8 @@ void Song::clearProject()
 
 	removeAllControllers();
 
+	ProjectProperties::inst()->reset();
+
 	emit dataChanged();
 
 	Engine::projectJournal()->clearJournal();
@@ -1085,6 +1088,13 @@ void Song::loadProject( const QString & fileName )
 	//Backward compatibility for LMMS <= 0.4.15
 	PeakController::initGetControllerBySetting();
 
+	// Load project-specific settings
+	node = dataFile.content().firstChildElement(ProjectProperties::inst()->nodeName());
+	if(!node.isNull())
+	{
+		ProjectProperties::inst()->restoreState(node.toElement());
+	}
+
 	// Load mixer first to be able to set the correct range for mixer channels
 	node = dataFile.content().firstChildElement( Engine::mixer()->nodeName() );
 	if( !node.isNull() )
@@ -1235,6 +1245,8 @@ bool Song::saveProjectFile(const QString & filename, bool withResources)
 	m_masterPitchModel.saveSettings( dataFile, dataFile.head(), "masterpitch" );
 
 	saveState( dataFile, dataFile.content() );
+
+	ProjectProperties::inst()->saveState(dataFile, dataFile.content());
 
 	Engine::mixer()->saveState( dataFile, dataFile.content() );
 	if( getGUI() != nullptr )
