@@ -27,15 +27,37 @@
 
 #include <QDomElement>
 #include <QMap>
+#include <QObject>
+#include <lmmsconfig.h>
 
 #include "lmms_export.h"
 
+namespace lmms::gui {
+class FileItem;
+}
 class QMimeData;
 
 namespace lmms::Clipboard
 {
 
-	enum class MimeType
+const QStringList projectExtensions{"mmp", "mpt", "mmpz"};
+const QStringList presetExtensions{"xpf", "xml", "xiz", "lv2"};
+const QStringList soundFontExtensions{"sf2", "sf3"};
+const QStringList patchExtensions{"pat"};
+const QStringList midiExtensions{"mid", "midi", "rmi"};
+#ifdef LMMS_BUILD_WINDOWS
+const QStringList vstPluginExtensions{"dll"};
+#else
+const QStringList vstPluginExtensions{"dll", "so"};
+#endif
+
+#ifdef LMMS_HAVE_SNDFILE_MP3
+const QStringList audioExtensions{"wav", "ogg", "ds", "flac", "spx", "voc", "aif", "aiff", "au", "raw", "mp3"};
+#else
+const QStringList audioExtensions{"wav", "ogg", "ds", "flac", "spx", "voc", "aif", "aiff", "au", "raw"};
+#endif
+
+enum class MimeType
 	{
 		StringPair,
 		Default
@@ -53,6 +75,8 @@ namespace lmms::Clipboard
 	void copyStringPair( const QString & key, const QString & value );
 	QString decodeKey( const QMimeData * mimeData );
 	QString decodeValue( const QMimeData * mimeData );
+
+	void startFileDrag(gui::FileItem* file, QObject* qo);
 
 	inline const char * mimeType( MimeType type )
 	{
